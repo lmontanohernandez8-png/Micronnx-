@@ -24,68 +24,30 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - name: Instalar cargo-ndk
-        run: cargo install cargo-ndk
+      - name: Usar el Android SDK ya preinstalado en el runner
+        run: |
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
 
-      - name: Instalar Android NDK r25b
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
+      - name: Instalar cibuildwheel
+        run: pip install cibuildwheel==4.1.0
+
+      - name: Compilar wheel con cibuildwheel (target Android arm64, Python 3.14)
+        uses: pypa/cibuildwheel@v4.1.0
         with:
-          ndk-version: r25b
-
-      - name: Instalar Python 3.14
-        uses: actions/setup-python@v5
-        id: setup-python
-        with:
-          python-version: "3.14"
-
-      - name: Instalar maturin
-        run: pip install maturin
-
-      - name: Verificar el intérprete de Python encontrado
-        run: |
-          echo "== python-path reportado por setup-python =="
-          echo "${{ steps.setup-python.outputs.python-path }}"
-          PY_DIR=$(dirname "${{ steps.setup-python.outputs.python-path }}")
-          echo "== Contenido de $PY_DIR =="
-          ls -la "$PY_DIR"
-          echo "== Buscando cualquier binario python3.14* en el sistema =="
-          find /opt/hostedtoolcache/Python -maxdepth 4 -iname "python3.14*" 2>/dev/null
-          # Usamos el ejecutable real de setup-python (funciona siempre, sin importar el nombre)
-          REAL_PY="${{ steps.setup-python.outputs.python-path }}"
-          echo "== Versión reportada por el intérprete real =="
-          "$REAL_PY" --version
-          echo "REAL_PY=$REAL_PY" >> "$GITHUB_ENV"
-
-      - name: Crear symlink con nombre versionado para que maturin lo detecte
-        run: |
-          mkdir -p /tmp/py-bin
-          ln -sf "$REAL_PY" /tmp/py-bin/python3.14
-          /tmp/py-bin/python3.14 --version
-
-      - name: Configurar variables de entorno del NDK
-        run: |
-          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
-          echo "AR_aarch64_linux_android=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> "$GITHUB_ENV"
-          echo "CC_aarch64_linux_android=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
-          echo "CXX_aarch64_linux_android=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS=-C link-arg=-Wl,-rpath,/data/data/com.termux/files/usr/lib -C link-arg=-L/data/data/com.termux/files/usr/lib -C link-arg=-lpython3.14 -C link-arg=-Wl,--no-as-needed" >> "$GITHUB_ENV"
-
-      - name: Compilar wheel con maturin (target Android arm64)
-        working-directory: pydantic-monorepo/pydantic-core
-        run: |
-          maturin build --release \
-            --target aarch64-linux-android \
-            --interpreter /tmp/py-bin/python3.14 \
-            --out /tmp/wheels-raw
+          package-dir: pydantic-monorepo/pydantic-core
+          output-dir: /tmp/wheels-raw
+        env:
+          CIBW_PLATFORM: android
+          CIBW_BUILD: "cp314-*"
+          CIBW_ARCHS: arm64_v8a
+          ANDROID_API_LEVEL: "24"
 
       - name: Renombrar wheel a tag compatible con Termux (linux_aarch64)
         run: |
           mkdir -p /tmp/wheels-final
           for f in /tmp/wheels-raw/*.whl; do
             base=$(basename "$f")
-            # maturin etiqueta como ..._android_24_arm64_v8a.whl; Termux espera linux_aarch64
+            # cibuildwheel etiqueta como ..._android_24_arm64_v8a.whl; Termux espera linux_aarch64
             nuevo=$(echo "$base" | sed 's/android_24_arm64_v8a/linux_aarch64/')
             cp "$f" "/tmp/wheels-final/$nuevo"
           done
