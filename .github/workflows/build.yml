@@ -11,8 +11,6 @@ on:
 jobs:
   build-android-wheel:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Clonar el código fuente de pydantic (monorepo, incluye pydantic-core)
         uses: actions/checkout@v4
@@ -26,30 +24,116 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - name: Usar el Android SDK ya preinstalado en el runner
-        run: |
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+      - name: Instalar cargo-ndk
+        run: cargo install cargo-ndk
 
-      - name: Instalar cibuildwheel
-        run: pip install cibuildwheel==4.1.0
-
-      - name: Compilar wheel con cibuildwheel (target Android arm64, Python 3.14)
-        uses: pypa/cibuildwheel@v4.1.0
+      - name: Instalar Android NDK r25b
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
         with:
-          package-dir: pydantic-monorepo/pydantic-core
-          output-dir: /tmp/wheels-raw
-        env:
-          CIBW_PLATFORM: android
-          CIBW_BUILD: "cp314-*"
-          CIBW_ARCHS: arm64_v8a
-          ANDROID_API_LEVEL: "24"
+          ndk-version: r25b
+
+      - name: Instalar Python 3.14 (para compilar el host, no el target)
+        uses: actions/setup-python@v5
+        id: setup-python
+        with:
+          python-version: "3.14"
+
+      - name: Compilar maturin con parche de detección de Android
+        run: |
+          git clone --depth 1 --branch v1.9.4 https://github.com/PyO3/maturin.git /tmp/maturin-src
+          cd /tmp/maturin-src
+          cat > /tmp/android-fix.patch << 'PATCHEOF'
+          --- a/src/target/mod.rs
+          +++ b/src/target/mod.rs
+          @@ -456,6 +456,9 @@ impl Target {
+               /// Returns the name python uses in `sys.platform` for this os
+               pub fn get_python_os(&self) -> &str {
+          +        if self.is_bionic_libc() {
+          +            return "android";
+          +        }
+                   match self.os {
+                       Os::Windows => "windows",
+                       Os::Linux => "linux",
+          @@ -682,6 +685,15 @@ impl Target {
+                   )
+               }
+          +        /// Returns true if the current platform's target env is Android
+          +        #[inline]
+          +        pub fn is_bionic_libc(&self) -> bool {
+          +            matches!(
+          +                self.env,
+          +                Environment::Android
+          +            )
+          +        }
+          +
+               /// Is cross compiling for this target
+               #[inline]
+               pub fn cross_compiling(&self) -> bool {
+          PATCHEOF
+          git apply -v /tmp/android-fix.patch || echo "⚠️ el parche no aplicó limpio, revisar manualmente en el log"
+          pip install .
+
+      - name: Descargar libpython3.14 de Termux (arm64) para cross-compilar
+        run: |
+          mkdir -p /tmp/termux-python/lib /tmp/termux-python-extracted
+          cd /tmp
+          echo "== Buscando la URL real del paquete python en el índice de Termux =="
+          curl -s "https://packages-cf.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages" -o /tmp/Packages
+          PKG_PATH=$(awk '/^Package: python$/{f=1} f&&/^Filename:/{print $2; exit}' /tmp/Packages)
+          if [ -z "$PKG_PATH" ]; then
+            echo "❌ No se encontró el paquete 'python' en el índice. Mostrando paquetes similares:"
+            grep -A1 "^Package: python" /tmp/Packages | head -40
+            exit 1
+          fi
+          echo "Paquete encontrado: $PKG_PATH"
+          curl -L -o termux-python.deb "https://packages-cf.termux.dev/apt/termux-main/$PKG_PATH"
+          ar x termux-python.deb
+          ls -la /tmp/*.tar.*
+          DATA_TAR=$(ls /tmp/data.tar.* | head -1)
+          case "$DATA_TAR" in
+            *.tar.zst) tar --zstd -xf "$DATA_TAR" -C /tmp/termux-python-extracted ;;
+            *.tar.xz)  tar -xf "$DATA_TAR" -C /tmp/termux-python-extracted ;;
+            *.tar.gz)  tar -xzf "$DATA_TAR" -C /tmp/termux-python-extracted ;;
+            *)         echo "❌ Formato de archivo de datos desconocido: $DATA_TAR"; exit 1 ;;
+          esac
+          echo "== Buscando libpython3.14 dentro del paquete =="
+          find /tmp/termux-python-extracted -iname "libpython3.14*"
+          find /tmp/termux-python-extracted -iname "libpython3.14*.so*" -exec cp {} /tmp/termux-python/lib/ \;
+          find /tmp/termux-python-extracted -path "*python3.14*" -name "_sysconfigdata*.py" -exec cp {} /tmp/termux-python/lib/ \;
+          echo "== Contenido final de /tmp/termux-python/lib =="
+          ls -la /tmp/termux-python/lib
+          if [ -z "$(ls -A /tmp/termux-python/lib)" ]; then
+            echo "❌ No se encontró libpython3.14 ni _sysconfigdata en el paquete descargado."
+            exit 1
+          fi
+
+      - name: Configurar variables de entorno del NDK y de cross-compilación PyO3
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_linux_android=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS=-C link-arg=-Wl,-rpath,/data/data/com.termux/files/usr/lib -C link-arg=-L/data/data/com.termux/files/usr/lib -C link-arg=-Wl,--no-as-needed" >> "$GITHUB_ENV"
+          # Claves para que PyO3 sepa que estamos cross-compilando hacia el Python de Android/Termux
+          echo "PYO3_CROSS_LIB_DIR=/tmp/termux-python/lib" >> "$GITHUB_ENV"
+          echo "PYO3_CROSS_PYTHON_VERSION=3.14" >> "$GITHUB_ENV"
+          echo "PYO3_CROSS_PYTHON_IMPLEMENTATION=CPython" >> "$GITHUB_ENV"
+
+      - name: Compilar wheel con maturin (target Android arm64, cross-compile real)
+        working-directory: pydantic-monorepo/pydantic-core
+        run: |
+          maturin build --release \
+            --target aarch64-linux-android \
+            --out /tmp/wheels-raw
 
       - name: Renombrar wheel a tag compatible con Termux (linux_aarch64)
         run: |
           mkdir -p /tmp/wheels-final
           for f in /tmp/wheels-raw/*.whl; do
             base=$(basename "$f")
-            # cibuildwheel etiqueta como ..._android_24_arm64_v8a.whl; Termux espera linux_aarch64
+            # maturin etiqueta como ..._android_24_arm64_v8a.whl; Termux espera linux_aarch64
             nuevo=$(echo "$base" | sed 's/android_24_arm64_v8a/linux_aarch64/')
             cp "$f" "/tmp/wheels-final/$nuevo"
           done
