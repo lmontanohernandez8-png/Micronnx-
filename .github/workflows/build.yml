@@ -3,21 +3,21 @@ name: Build pydantic_core wheel para Termux (Android arm64, Python 3.14)
 on:
   workflow_dispatch:
     inputs:
-      pydantic_core_version:
-        description: "Versión exacta de pydantic_core a compilar (debe coincidir con la que pide tu pydantic instalado)"
+      pydantic_version:
+        description: "Versión de PYDANTIC (no pydantic-core) que tienes instalada. Revisa con: pip show pydantic"
         required: true
-        default: "2.46.4"
+        default: "2.13.4"
 
 jobs:
   build-android-wheel:
     runs-on: ubuntu-latest
     steps:
-      - name: Clonar el código fuente de pydantic-core
+      - name: Clonar el código fuente de pydantic (monorepo, incluye pydantic-core)
         uses: actions/checkout@v4
         with:
-          repository: pydantic/pydantic-core
-          ref: v${{ inputs.pydantic_core_version }}
-          path: pydantic-core
+          repository: pydantic/pydantic
+          ref: v${{ inputs.pydantic_version }}
+          path: pydantic-monorepo
 
       - name: Instalar Rust
         uses: dtolnay/rust-toolchain@stable
@@ -51,7 +51,7 @@ jobs:
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS=-C link-arg=-Wl,-rpath,/data/data/com.termux/files/usr/lib -C link-arg=-L/data/data/com.termux/files/usr/lib -C link-arg=-lpython3.14 -C link-arg=-Wl,--no-as-needed" >> "$GITHUB_ENV"
 
       - name: Compilar wheel con maturin (target Android arm64)
-        working-directory: pydantic-core
+        working-directory: pydantic-monorepo/pydantic-core
         run: |
           maturin build --release \
             --target aarch64-linux-android \
@@ -79,10 +79,11 @@ jobs:
       - name: Crear release con el wheel
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: pydantic_core-${{ inputs.pydantic_core_version }}-py314-android
-          name: pydantic_core ${{ inputs.pydantic_core_version }} — Python 3.14 Android arm64
+          tag_name: pydantic_core-py314-android-${{ inputs.pydantic_version }}
+          name: pydantic_core (para pydantic ${{ inputs.pydantic_version }}) — Python 3.14 Android arm64
           files: /tmp/wheels-final/*.whl
           body: |
-            Wheel de pydantic_core compilada para Termux/Android (Python 3.14, arm64).
+            Wheel de pydantic_core compilada para Termux/Android (Python 3.14, arm64),
+            correspondiente a pydantic ${{ inputs.pydantic_version }}.
             Instalar con:
-              pip install pydantic_core-${{ inputs.pydantic_core_version }}-*.whl --no-deps
+              pip install pydantic_core-*.whl --no-deps
