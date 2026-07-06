@@ -1,0 +1,88 @@
+name: Build pydantic_core wheel para Termux (Android arm64, Python 3.14)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pydantic_core_version:
+        description: "Versión exacta de pydantic_core a compilar (debe coincidir con la que pide tu pydantic instalado)"
+        required: true
+        default: "2.46.4"
+
+jobs:
+  build-android-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar el código fuente de pydantic-core
+        uses: actions/checkout@v4
+        with:
+          repository: pydantic/pydantic-core
+          ref: v${{ inputs.pydantic_core_version }}
+          path: pydantic-core
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Instalar cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Instalar Android NDK r25b
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r25b
+
+      - name: Instalar Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Instalar maturin
+        run: pip install maturin
+
+      - name: Configurar variables de entorno del NDK
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_linux_android=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS=-C link-arg=-Wl,-rpath,/data/data/com.termux/files/usr/lib -C link-arg=-L/data/data/com.termux/files/usr/lib -C link-arg=-lpython3.14 -C link-arg=-Wl,--no-as-needed" >> "$GITHUB_ENV"
+
+      - name: Compilar wheel con maturin (target Android arm64)
+        working-directory: pydantic-core
+        run: |
+          maturin build --release \
+            --target aarch64-linux-android \
+            --interpreter python3.14 \
+            --out /tmp/wheels-raw
+
+      - name: Renombrar wheel a tag compatible con Termux (linux_aarch64)
+        run: |
+          mkdir -p /tmp/wheels-final
+          for f in /tmp/wheels-raw/*.whl; do
+            base=$(basename "$f")
+            # maturin etiqueta como ..._android_24_arm64_v8a.whl; Termux espera linux_aarch64
+            nuevo=$(echo "$base" | sed 's/android_24_arm64_v8a/linux_aarch64/')
+            cp "$f" "/tmp/wheels-final/$nuevo"
+          done
+          ls -la /tmp/wheels-final
+
+      - name: Subir wheel como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pydantic_core-android-py314-arm64
+          path: /tmp/wheels-final/*.whl
+          retention-days: 30
+
+      - name: Crear release con el wheel
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pydantic_core-${{ inputs.pydantic_core_version }}-py314-android
+          name: pydantic_core ${{ inputs.pydantic_core_version }} — Python 3.14 Android arm64
+          files: /tmp/wheels-final/*.whl
+          body: |
+            Wheel de pydantic_core compilada para Termux/Android (Python 3.14, arm64).
+            Instalar con:
+              pip install pydantic_core-${{ inputs.pydantic_core_version }}-*.whl --no-deps
