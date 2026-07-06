@@ -44,10 +44,24 @@ jobs:
 
       - name: Verificar el intérprete de Python encontrado
         run: |
+          echo "== python-path reportado por setup-python =="
+          echo "${{ steps.setup-python.outputs.python-path }}"
           PY_DIR=$(dirname "${{ steps.setup-python.outputs.python-path }}")
-          echo "PY_DIR=$PY_DIR" >> "$GITHUB_ENV"
-          ls -la "$PY_DIR" | grep python
-          "$PY_DIR/python3.14" --version
+          echo "== Contenido de $PY_DIR =="
+          ls -la "$PY_DIR"
+          echo "== Buscando cualquier binario python3.14* en el sistema =="
+          find /opt/hostedtoolcache/Python -maxdepth 4 -iname "python3.14*" 2>/dev/null
+          # Usamos el ejecutable real de setup-python (funciona siempre, sin importar el nombre)
+          REAL_PY="${{ steps.setup-python.outputs.python-path }}"
+          echo "== Versión reportada por el intérprete real =="
+          "$REAL_PY" --version
+          echo "REAL_PY=$REAL_PY" >> "$GITHUB_ENV"
+
+      - name: Crear symlink con nombre versionado para que maturin lo detecte
+        run: |
+          mkdir -p /tmp/py-bin
+          ln -sf "$REAL_PY" /tmp/py-bin/python3.14
+          /tmp/py-bin/python3.14 --version
 
       - name: Configurar variables de entorno del NDK
         run: |
@@ -63,7 +77,7 @@ jobs:
         run: |
           maturin build --release \
             --target aarch64-linux-android \
-            --interpreter "${PY_DIR}/python3.14" \
+            --interpreter /tmp/py-bin/python3.14 \
             --out /tmp/wheels-raw
 
       - name: Renombrar wheel a tag compatible con Termux (linux_aarch64)
