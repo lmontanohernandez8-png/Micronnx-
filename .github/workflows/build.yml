@@ -44,9 +44,10 @@ jobs:
 
       - name: Verificar el intérprete de Python encontrado
         run: |
-          echo "Python path: ${{ steps.setup-python.outputs.python-path }}"
-          ${{ steps.setup-python.outputs.python-path }} --version
-          ${{ steps.setup-python.outputs.python-path }} -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
+          PY_DIR=$(dirname "${{ steps.setup-python.outputs.python-path }}")
+          echo "PY_DIR=$PY_DIR" >> "$GITHUB_ENV"
+          ls -la "$PY_DIR" | grep python
+          "$PY_DIR/python3.14" --version
 
       - name: Configurar variables de entorno del NDK
         run: |
@@ -62,7 +63,7 @@ jobs:
         run: |
           maturin build --release \
             --target aarch64-linux-android \
-            --interpreter "${{ steps.setup-python.outputs.python-path }}" \
+            --interpreter "${PY_DIR}/python3.14" \
             --out /tmp/wheels-raw
 
       - name: Renombrar wheel a tag compatible con Termux (linux_aarch64)
