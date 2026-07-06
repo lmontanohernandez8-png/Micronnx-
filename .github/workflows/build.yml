@@ -11,6 +11,8 @@ on:
 jobs:
   build-android-wheel:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Clonar el código fuente de pydantic (monorepo, incluye pydantic-core)
         uses: actions/checkout@v4
